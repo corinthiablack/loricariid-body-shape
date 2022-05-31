@@ -1,0 +1,39 @@
+<shapes type=list>
+	<landmarks type=matrix rownames=TRUE colnames=FALSE nrow=38 ncol=3 as.numeric=TRUE >
+		Anal-fin-anterior	9.888466472	-8.121966714	-7.962151142
+		Caudal-fin-dorsal	24.56186186	-7.462881666	-3.616283136
+		Caudal-fin-ventral	26.1464803	-7.53676113	-9.059324147
+		Cloaca	5.775448258	-8.276226593	-7.937788359
+		Dorsal-fin-anterior	-3.868956912	-8.409615935	1.42576111
+		Eye-anterior_R	-16.06735886	-12.36062085	-1.17920763
+		Eye-anterior_L	-16.32495734	-5.51880464	-1.347066923
+		Eye-lateral_R	-14.84885369	-13.180294	-1.629572336
+		Eye-lateral_L	-15.17066746	-4.632919738	-1.839276333
+		Eye-medial_R	-14.85484818	-11.52282447	-0.213127647
+		Eye-medial_L	-15.05469864	-6.2147958	-0.343356509
+		Eye-posterior_R	-13.77521794	-12.33104417	-1.074214505
+		Eye-posterior_L	-14.03727277	-5.370867516	-1.244977691
+		Mouth-lateral_R	-19.8804119	-13.95933145	-7.585093148
+		Mouth-lateral_L	-20.23555307	-4.526781554	-7.816514326
+		Naris_R	-17.69623899	-10.55317936	-1.694551056
+		Naris_L	-17.81245032	-7.466606243	-1.770278022
+		Opercle-dorsal_R	-13.35702313	-17.19493632	-6.488278121
+		Opercle-dorsal_L	-13.97579783	-0.760279229	-6.891491223
+		Opercle-ventral_R	NA	NA	NA
+		Opercle-ventral_L	NA	NA	NA
+		Oral-disk-lateral_R	-19.41748365	-16.49920882	-8.499305925
+		Oral-disk-lateral_L	-19.96311942	-2.007122041	-8.854859389
+		Oral-disk-posterior	-14.10367419	-9.022300491	-7.840496524
+		Pectoral-fin-anterior_R	-11.22392136	-17.41216833	-6.960581408
+		Pectoral-fin-anterior_L	-11.86418556	-0.406750023	-7.377797746
+		Pectoral-fin-posterior_R	-7.453815722	-16.15124561	-6.835631642
+		Pectoral-fin-posterior_L	-8.010219885	-1.373150074	-7.198202136
+		Pelvic-fin-anterior_R	-0.805013814	-14.65276916	-8.393264173
+		Pelvic-fin-anterior_L	-1.26474871	-2.442209519	-8.692841925
+		Pelvic-fin-posterior_R	2.301057584	-13.07441643	-7.980257721
+		Pelvic-fin-posterior_L	1.950385143	-3.7605558	-8.208766938
+		Tip-of-snout	-25.68519188	-9.435573986	-6.912099202
+	</landmarks>
+	<curves type=list>
+	</curves>
+</shapes>

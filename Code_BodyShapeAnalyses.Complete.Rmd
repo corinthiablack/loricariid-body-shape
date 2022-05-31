@@ -1,0 +1,1399 @@
+---
+title: "3d body shape from 2d photos"
+author: "Corinthia Black"
+date: "10/17/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(geomorph)
+library(dplyr)
+library(vegan)
+library(devtools)
+library(ggbiplot)
+library(ape)
+library(phytools)
+library(StereoMorph)
+library(nord)
+library(RRphylo)
+library(Rvcg)
+library(basicPlotteR)
+library(PCDimension) #broken stick models
+library(convevol)
+library(EMMLi) #Modularity tests
+library(paleomorph) #correlation matrix for EMMLi
+library(qgraph)
+library(MetBrewer) #color paletes 
+#install.packages("remotes")
+#remotes::install_github("hferg/EMMLiv2")
+library(EMMLiv2)
+library(geiger)
+library(sp)
+require(PBSmapping)
+require(av)
+library(PhylogeneticEM)
+```
+
+## Must run `Convert.sh` BEFORE MOVING FORWARD
+ # removes unwanted landmarks (like fin tips which are used to generate 3D landmarks from 2D)
+
+```{r Load Data}
+shapes=readShapes('./Landmarks/All_For-Analyses_18dec21/') #read shape data from all files
+
+OGlm_arr=shapes$landmarks #Save landmarks to array
+any(is.na(OGlm_arr)) #check if any landmarks are missing
+
+OGlm_arr=estimate.missing(OGlm_arr, method = "TPS") #estimate missing landmarks
+any(is.na(OGlm_arr))
+
+# Run Procrustes on landmark array
+gpagenr=gpagen(OGlm_arr)
+pca.body=gm.prcomp(gpagenr$coords)
+
+namlabs=dimnames(gpagenr$coords)[[3]]
+```
+
+```{r Averaged PCA}
+coords=two.d.array(gpagenr$coords) #save coords from GPA
+
+classifier=read.csv("./Classifiers.csv", sep = ",", header = T, row.names = 1) #load classifiers
+classifier=classifier[row.names(coords),] #set rownames
+
+averagedcoords=aggregate(coords~classifier$Species, FUN = mean) #find mean of species - average individual landmarks by species name
+averagedcoords=data.frame(averagedcoords, row.names = 1) #set row names
+
+meancoords=arrayspecs(averagedcoords, 33, 3) #GPA on mean data
+
+meanpca=gm.prcomp(meancoords) #generate PCA and save PCA data to object
+
+meansummary=summary(meanpca)
+
+#write.csv(meansummary$PC.summary, file = "./Output/MorphospacePCA.txt")
+
+aveclassifier=read.csv("./AveClassifiers.csv", sep = ",", header = T, row.names = 1)
+
+plot(meanpca)
+text(meanpca$x[,1], meanpca$x[,2], aveclassifier$Figure)
+
+## Broken Stick ##
+    lambda=meanpca$sdev^2
+    bsDimension(lambda) # 2 significant axis
+```
+
+```{r Backtransformation}
+## This code uses Stereomorpho exclusively
+## Need to load btShapes.R from
+## https://aaronolsen.github.io/tutorials/morphometrics/backtransform.html
+source('btShapes.R')
+
+## Save GPA Coords as object
+gpa_array=meancoords
+
+## Convert coords to be used in backtransformation
+gpa_mat=t(apply(gpa_array, 3, function(y) matrix(t(y),1)))
+resEig=eigen(cov(gpa_mat))
+scores=gpa_mat %*% resEig$vectors
+scores=scores[order(row.names(scores)),]
+per_var <- (resEig$values / sum(resEig$values))*100
+
+#resEig$vectors[,1]=resEig$vectors[,1]*-1
+resEig$vectors[,2]=resEig$vectors[,2]*-1
+#scores[,1]=scores[,1]*-1
+scores[,2]=scores[,2]*-1
+
+colorstry=met.brewer("Hiroshige", type = "continuous")
+colorsramp=colorRampPalette(colorstry)
+bt.colblind_pal=colorsramp(4)
+
+## Set colors for bt PCA
+bt.col=bt.colblind_pal
+names(bt.col)=levels(aveclassifier$Subfam)
+bt.col=bt.col[match(aveclassifier$Subfam,names(bt.col))]
+
+## Function to generate outlines and bt
+outline_lateral=function(xy, coor, size=1, col='black'){
+  if(ncol(coor) == 3){
+		coor <- coor %*% matrix(c(1,0,0, 0,cos(-pi/2),sin(-pi/2),
+		0,-sin(-pi/2),cos(-pi/2)), nrow=3, ncol=3)
+	}
+	# Get just x,y coordinates (orthographic projection into xy-plane)
+	coor <- coor[, 1:2]
+	# Get plot aspect ratio
+	w <- par('pin')[1]/diff(par('usr')[1:2])
+	h <- par('pin')[2]/diff(par('usr')[3:4])
+	asp <- w/h
+	# Correct for plot aspect ratio not necessarily being 1:1
+	coor[, 1] <- coor[, 1] * (1/asp)
+	# Scale points and place back in position
+	coor <- coor*size
+	# Center about zero based on range of coordinates
+	coor <- coor - matrix(colMeans(apply(coor, 2, range)),
+		nrow=nrow(coor), ncol=ncol(coor), byrow=TRUE)
+	# Move shape to PC score
+	coor <- coor + matrix(xy, nrow(coor), ncol(coor), byrow=TRUE)
+
+	### Create shape
+	polygon_order = c(33,17,5,2,3,1,30,26,33)
+  line_order=c(6,8,12,10,6)
+
+	# Create filled polygon
+	polygon(coor[polygon_order, ], col = "#D3D3D3", border = "#D3D3D3")
+	polygon(coor[line_order, ], border = "black")
+
+}
+
+## Function to generate outlines and bt
+outline_ventral=function(xy, coor, size=1, col='black'){
+ 
+  # If 3D, rotate points about x-axis using 3D rotation matrix
+	if(ncol(coor) == 3){
+		coor <- coor %*% matrix(c(1,0,0, 0,cos(-pi/2),sin(-pi/2), 
+			0,-sin(-pi/2),cos(-pi/2)), nrow=3, ncol=3)
+	}
+  
+	# Get just x,y coordinates (orthographic projection into xy-plane)
+	coor <- coor[, c(1,3)]
+	# Get plot aspect ratio
+	w <- par('pin')[1]/diff(par('usr')[1:2])
+	h <- par('pin')[2]/diff(par('usr')[3:4])
+	asp <- w/h
+	# Correct for plot aspect ratio not necessarily being 1:1
+	coor[, 1] <- coor[, 1] * (1/asp)
+	# Scale points and place back in position
+	coor <- coor*size
+	# Center about zero based on range of coordinates
+	coor <- coor - matrix(colMeans(apply(coor, 2, range)),
+		nrow=nrow(coor), ncol=ncol(coor), byrow=TRUE)
+	# Move shape to PC score
+	coor <- coor + matrix(xy, nrow(coor), ncol(coor), byrow=TRUE)
+
+	### Create shape
+	polygon_order = c(33,22,25,29,2,30,26,23,33)
+	line_order=c(22,33,23,24,22)
+
+	# Create filled polygon
+	polygon(coor[polygon_order, ], col = "#D3D3D3", border = "#D3D3D3")
+	polygon(coor[line_order, ], border = "black")
+
+}
+
+## Generate Backtransformed PCA for PC1 and PC2
+
+pcs=1:2
+pdf('./Output/LateralBT.pdf', width=7.2, height=5)
+plot(scores[, pcs], type='n', xlab=paste0('PC', pcs[1], ' (', round(per_var[pcs[1]]), '%)'), ylab=paste0('PC', pcs[2], ' (', round(per_var[pcs[2]]), '%)'))
+btShapes(scores=scores, vectors=resEig$vectors, fcn=outline_lateral, pcs=pcs, n=c(6,5), m=dim(gpa_array)[2], row.names=dimnames(gpa_array)[[1]], pc.margin=c(0.06,0.05), size=0.25)
+points(scores[,pcs], pch=21, bg=bt.col, cex=1.25)
+text(scores[, pcs], labels=aveclassifier$Figure, cex=0.8, pos=4, offset=.5)
+dev.off()
+
+## Generate Backtransformed PCA for PC1 and PC2
+pcs=1:2
+pdf('./Output/VentralBT.pdf', width=7.2, height=5)
+plot(scores[, pcs], type='n',
+	xlab=paste0('PC', pcs[1], ' (', round(per_var[pcs[1]]), '%)'),
+	ylab=paste0('PC', pcs[2], ' (', round(per_var[pcs[2]]), '%)'))
+btShapes(scores=scores, vectors=resEig$vectors, fcn=outline_ventral, pcs=pcs, n=c(6,5), m=dim(gpa_array)[2], row.names=dimnames(gpa_array)[[1]], pc.margin=c(0.06,0.05), size=0.25)
+points(scores[,pcs], pch=21, bg=bt.col, cex=1.75)
+text(scores[, pcs], labels=aveclassifier$Figure, cex=0.8, pos=4, offset=.5)
+dev.off()
+```
+
+```{r PCA-Phylomorphospace Lujan et al.}
+tree=read.tree("./Lujan 2015_Tree.tre") #Read phylogeny
+
+## Trim tree to match species in data set
+species=as.factor(row.names(aveclassifier))
+trimmed.tree=drop.tip(tree,tree$tip.label[-na.omit(match(species, tree$tip.label))])
+
+## Trim species landmarks to match phylogeny
+phylocoords=two.d.array(meancoords)
+include=trimmed.tree$tip.label
+phylocoords=subset(phylocoords, row.names(phylocoords) %in% include)
+phylocoords=phylocoords[trimmed.tree$tip.label,] #Order landmarks - needed for labels and colors to be correct
+
+## Find distinct classifiers and trim/order to match phylogeny
+include=trimmed.tree$tip.label
+phyloclass=subset(aveclassifier, row.names(aveclassifier) %in% include)
+phyloclass=phyloclass[trimmed.tree$tip.label,] #Order landmarks - needed for labels and colors to be correct
+
+phypca=gm.prcomp(phylocoords, phy=trimmed.tree, align.to.phy=F)
+
+## Set colors for bt PCA
+bt.colblind_pal=colorRampPalette(c("#470f65","#3b4f8c","#25858e", "#25ab7f", "#4ec266", "#d5e100"))
+bt.colblind_pal <- bt.colblind_pal(4)
+phycol=bt.colblind_pal
+names(phycol)=levels(phyloclass$Subfam)
+phycol=phycol[match(phyloclass$Subfam,names(phycol))]
+
+#Plot figures
+pdf('./Output/Lujan.Phylomorphospace1-2.pdf', width=7.2, height=5)
+plot(phypca, phylo = T, time.plot = F, pch=21,  bg=phycol, cex=1.75, xlab = "PC1 (63.0%)", ylab = "PC2 (9.0%)", phylo.par = list(tip.labels = F, node.labels = F, anc.states = T, node.bg ="grey", node.cex = .5, edge.color = "grey", edge.width = 1.5, tip.txt.cex = .5, node.txt.cex = .75, node.txt.col = "grey", node.txt.adj = c(-0.1, -0.1)))
+addTextLabels(phypca$x[,1], phypca$x[,2], phyloclass$Figure, col.label=phycol)
+dev.off()
+
+pdf('./Output/Lujan.Phylomorphospace2-3.pdf', width=7.2, height=5)
+plot(phypca, axis1 = 2, axis2 = 3, phylo = T, time.plot = F, pch=21,  bg=phycol, cex=1.75, xlab = "PC2 (9.0%)", ylab = "PC3 (6.7%)", phylo.par = list(tip.labels = F, node.labels = F, anc.states = T, node.bg ="grey", node.cex = .5, edge.color = "grey", edge.width = 1.5, tip.txt.cex = .5, node.txt.cex = .75, node.txt.col = "grey", node.txt.adj = c(-0.1, -0.1)))
+addTextLabels(phypca$x[,2], phypca$x[,3], phyloclass$Figure, col.label=phycol)
+dev.off()
+
+summary(phypca)
+#Proportion of Covariance	PC1:0.97636344	PC2:0.0126290342	
+meansummary=summary(phypca)
+#write.csv(meansummary$PC.summary, file = "Phylomorphospace.Lujan.PCA.txt")
+
+lujan.physig=physignal(phylocoords, trimmed.tree, iter=999) # K:1.1134; p-val:0.001; effect:7.9744
+
+## Broken Stick ##
+#morphospace
+    lambda=phypca$sdev^2
+    bsDimension(lambda) # 3 significant axis
+```
+
+```{r PaCA-Phylomorphospace Lujan et al.}
+PaCA.phypca=gm.prcomp(phylocoords, phy=trimmed.tree, align.to.phy=T)
+
+## Set colors for bt PACA
+phycol=bt.colblind_pal
+names(phycol)=levels(phyloclass$Subfam)
+phycol=phycol[match(phyloclass$Subfam,names(phycol))]
+
+pdf('./Output/Lujan.PACA.Phylomorphospace.pdf', width=7.2, height=5)
+plot(PaCA.phypca, phylo = T, time.plot = F, pch=21,  bg=phycol, cex=1.75, xlab = "PC1 (97.6%)", ylab = "PC2 (1.3%)", phylo.par = list(tip.labels = F, node.labels = F, anc.states = T, node.bg ="grey", node.cex = .5, edge.color = "grey", edge.width = 1.5, tip.txt.cex = .5, node.txt.cex = .75, node.txt.col = "grey", node.txt.adj = c(-0.1, -0.1)))
+addTextLabels(PaCA.phypca$x[,1], PaCA.phypca$x[,2], phyloclass$Figure, col.label=phycol)
+dev.off()
+
+#Proportion of Covariance	PC1:0.97636344	PC2:0.0126290342	
+meansummary=summary(PaCA.phypca)
+#write.csv(meansummary$PC.summary, file = "./Output/PACA.Phylomorphospace.Lujan.PCA.txt")
+
+## Broken Stick ##
+#morphospace
+    lambda=PaCA.phypca$sdev^2
+    bsDimension(lambda) # 1 significant axis
+```
+
+```{r Backtransformation Phylomorphospace Lujan et al.}
+## This code uses Stereomorpho exclusively
+## Need to load btShapes.R from
+## https://aaronolsen.github.io/tutorials/morphometrics/backtransform.html
+source('btShapes.R')
+
+## Save GPA Coords as object
+phylocoordsbt=arrayspecs(phylocoords, 33, 3)
+gpa_array=phylocoordsbt
+
+## Convert coords to be used in backtransformation
+gpa_mat=t(apply(gpa_array, 3, function(y) matrix(t(y),1)))
+resEig=eigen(cov(gpa_mat))
+scores=gpa_mat %*% resEig$vectors
+scores=scores[order(row.names(scores)),]
+per_var <- (resEig$values / sum(resEig$values))*100
+
+#resEig$vectors[,1]=resEig$vectors[,1]*-1
+resEig$vectors[,2]=resEig$vectors[,2]*-1
+#scores[,1]=scores[,1]*-1
+scores[,2]=scores[,2]*-1
+
+## Reduced color pal to match phylomorphospace families
+bt.colblind_pal=colorRampPalette(c("#470f65","#3b4f8c","#25858e", "#25ab7f", "#4ec266", "#d5e100"))
+bt.colblind_pal <- bt.colblind_pal(4)
+
+## Set colors for bt PCA
+phyloclass.bt=subset(aveclassifier, row.names(aveclassifier) %in% include)
+
+bt.col=bt.colblind_pal
+names(bt.col)=levels(phyloclass.bt$Subfam)
+bt.col=bt.col[match(phyloclass.bt$Subfam,names(bt.col))]
+
+## Function to generate outlines and bt
+outline_lateral=function(xy, coor, size=1, col='black'){
+  if(ncol(coor) == 3){
+		coor <- coor %*% matrix(c(1,0,0, 0,cos(-pi/2),sin(-pi/2),
+		0,-sin(-pi/2),cos(-pi/2)), nrow=3, ncol=3)
+	}
+	# Get just x,y coordinates (orthographic projection into xy-plane)
+	coor <- coor[, 1:2]
+	# Get plot aspect ratio
+	w <- par('pin')[1]/diff(par('usr')[1:2])
+	h <- par('pin')[2]/diff(par('usr')[3:4])
+	asp <- w/h
+	# Correct for plot aspect ratio not necessarily being 1:1
+	coor[, 1] <- coor[, 1] * (1/asp)
+	# Scale points and place back in position
+	coor <- coor*size
+	# Center about zero based on range of coordinates
+	coor <- coor - matrix(colMeans(apply(coor, 2, range)),
+		nrow=nrow(coor), ncol=ncol(coor), byrow=TRUE)
+	# Move shape to PC score
+	coor <- coor + matrix(xy, nrow(coor), ncol(coor), byrow=TRUE)
+
+	### Create shape
+	polygon_order = c(33,17,5,2,3,1,30,26,33)
+  line_order=c(6,8,12,10,6)
+
+	# Create filled polygon
+	polygon(coor[polygon_order, ], col = "#D3D3D3", border = "#D3D3D3")
+	polygon(coor[line_order, ], border = "black")
+
+}
+
+## Function to generate outlines and bt
+outline_ventral=function(xy, coor, size=1, col='black'){
+ 
+  # If 3D, rotate points about x-axis using 3D rotation matrix
+	if(ncol(coor) == 3){
+		coor <- coor %*% matrix(c(1,0,0, 0,cos(-pi/2),sin(-pi/2), 
+			0,-sin(-pi/2),cos(-pi/2)), nrow=3, ncol=3)
+	}
+  
+	# Get just x,y coordinates (orthographic projection into xy-plane)
+	coor <- coor[, c(1,3)]
+	# Get plot aspect ratio
+	w <- par('pin')[1]/diff(par('usr')[1:2])
+	h <- par('pin')[2]/diff(par('usr')[3:4])
+	asp <- w/h
+	# Correct for plot aspect ratio not necessarily being 1:1
+	coor[, 1] <- coor[, 1] * (1/asp)
+	# Scale points and place back in position
+	coor <- coor*size
+	# Center about zero based on range of coordinates
+	coor <- coor - matrix(colMeans(apply(coor, 2, range)),
+		nrow=nrow(coor), ncol=ncol(coor), byrow=TRUE)
+	# Move shape to PC score
+	coor <- coor + matrix(xy, nrow(coor), ncol(coor), byrow=TRUE)
+
+	### Create shape
+	polygon_order = c(33,22,25,29,2,30,26,23,33)
+	line_order=c(22,33,23,24,22)
+
+	# Create filled polygon
+	polygon(coor[polygon_order, ], col = "#D3D3D3", border = "#D3D3D3")
+	polygon(coor[line_order, ], border = "black")
+
+}
+
+## Generate Backtransformed PCA for PC1 and PC2
+pcs=1:2
+pdf('./Output/Lujan.LateralBT.pdf', width=7.2, height=5)
+plot(scores[, pcs], type='n', xlab=paste0('PC', pcs[1], ' (', round(per_var[pcs[1]]), '%)'), ylab=paste0('PC', pcs[2], ' (', round(per_var[pcs[2]]), '%)'))
+btShapes(scores=scores, vectors=resEig$vectors, fcn=outline_lateral, pcs=pcs, n=c(6,5), m=dim(gpa_array)[2], row.names=dimnames(gpa_array)[[1]], pc.margin=c(0.06,0.05), size=0.25)
+points(scores[,pcs], pch=21, bg=bt.col, cex=1.25)
+text(scores[, pcs], labels=phyloclass.bt$Figure, cex=0.8, pos=4, offset=.5)
+dev.off()
+
+## Generate Backtransformed PCA for PC1 and PC2
+pcs=1:2
+pdf('./Output/Lujan.VentralBT1-2.pdf', width=7.2, height=5)
+plot(scores[, pcs], type='n',
+	xlab=paste0('PC', pcs[1], ' (', round(per_var[pcs[1]]), '%)'),
+	ylab=paste0('PC', pcs[2], ' (', round(per_var[pcs[2]]), '%)'))
+btShapes(scores=scores, vectors=resEig$vectors, fcn=outline_ventral, pcs=pcs, n=c(6,5), m=dim(gpa_array)[2], row.names=dimnames(gpa_array)[[1]], pc.margin=c(0.06,0.05), size=0.25)
+points(scores[,pcs], pch=21, bg=bt.col, cex=1.25)
+text(scores[, pcs], labels=phyloclass.bt$Figure, cex=0.8, pos=4, offset=.5)
+dev.off()
+
+## Generate Backtransformed PCA for PC2 and PC3
+pcs=2:3
+pdf('./Output/Lujan.LateralBT2-3.pdf', width=7.2, height=5)
+plot(scores[, pcs], type='n', xlab=paste0('PC', pcs[1], ' (', round(per_var[pcs[1]]), '%)'), ylab=paste0('PC', pcs[2], ' (', round(per_var[pcs[2]]), '%)'))
+btShapes(scores=scores, vectors=resEig$vectors, fcn=outline_lateral, pcs=pcs, n=c(6,5), m=dim(gpa_array)[2], row.names=dimnames(gpa_array)[[1]], pc.margin=c(0.06,0.05), size=0.25)
+points(scores[,pcs], pch=21, bg=bt.col, cex=1.25)
+text(scores[, pcs], labels=phyloclass.bt$Figure, cex=0.8, pos=4, offset=.5)
+dev.off()
+
+## Generate Backtransformed PCA for PC2 and PC3
+pcs=2:3
+pdf('./Output/Lujan.VentralBT2-3.pdf', width=7.2, height=5)
+plot(scores[, pcs], type='n',
+	xlab=paste0('PC', pcs[1], ' (', round(per_var[pcs[1]]), '%)'),
+	ylab=paste0('PC', pcs[2], ' (', round(per_var[pcs[2]]), '%)'))
+btShapes(scores=scores, vectors=resEig$vectors, fcn=outline_ventral, pcs=pcs, n=c(6,5), m=dim(gpa_array)[2], row.names=dimnames(gpa_array)[[1]], pc.margin=c(0.06,0.05), size=0.25)
+points(scores[,pcs], pch=21, bg=bt.col, cex=1.25)
+text(scores[, pcs], labels=phyloclass.bt$Figure, cex=0.8, pos=4, offset=.5)
+dev.off()
+```
+
+```{r PCA-Phylomorphospace Roxo et al.}
+## Read phylogeny
+roxo.tree=read.tree("./Roxo 2019_TimeTree.tre")
+
+## Trim tree to match species in data set
+species=as.factor(row.names(aveclassifier))
+trimmed.roxo.tree=drop.tip(roxo.tree,roxo.tree$tip.label[-na.omit(match(species, roxo.tree$tip.label))])
+
+## Trim species landmarks to match phylogeny
+roxo.phylocoords=two.d.array(meancoords)
+include=trimmed.roxo.tree$tip.label
+roxo.phylocoords=subset(roxo.phylocoords, row.names(roxo.phylocoords) %in% include)
+roxo.phylocoords=roxo.phylocoords[trimmed.roxo.tree$tip.label,] #Order landmarks - needed for labels and colors to be correct
+
+## Find distinct classifiers and trim/order to match phylogeny
+include=trimmed.roxo.tree$tip.label
+roxo.phyloclass=subset(aveclassifier, row.names(aveclassifier) %in% include)
+roxo.phyloclass=roxo.phyloclass[trimmed.roxo.tree$tip.label,] #Order landmarks - needed for labels and colors to be correct
+
+roxo.phypca=gm.prcomp(roxo.phylocoords, phy=trimmed.roxo.tree, align.to.phy=F)
+
+## Set colors for bt PCA
+roxo.phycol=bt.colblind_pal
+names(roxo.phycol)=levels(roxo.phyloclass$Subfam)
+roxo.phycol=roxo.phycol[match(roxo.phyloclass$Subfam,names(roxo.phycol))]
+roxo.phypca$x[,2]=roxo.phypca$x[,2]*-1
+roxo.phypca$anc.x[,2]=roxo.phypca$anc.x[,2]*-1
+
+pdf('./Output/Roxo.Phylomorphospace.pdf', width=7.2, height=5)
+plot(roxo.phypca, phylo = T, time.plot = T, pch=21,  bg=roxo.phycol, cex=1.75, xlab = "PC1 (70.4%)", ylab = "PC2 (10.4%)", phylo.par = list(tip.labels = F, node.labels = F, anc.states = T, node.bg ="grey", node.cex = .5, edge.color = "grey", edge.width = 1.5, tip.txt.cex = .5, node.txt.cex = .75, node.txt.col = "grey", node.txt.adj = c(-0.1, -0.1)))
+addTextLabels(roxo.phypca$x[,1], roxo.phypca$x[,2], roxo.phyloclass$Figure, col.label=roxo.phycol)
+dev.off()
+
+summary(roxo.phypca) #Proportion of Covariance	PC1:0.97636344	PC2:0.0126290342	
+meansummary=summary(roxo.phypca)
+#write.csv(meansummary$PC.summary, file = "./Output/Phylomorphospace.Roxo.PCA.txt")
+
+physignal(roxo.phylocoords, trimmed.roxo.tree, iter=999) # K:1.1846; p-val:0.001; effect:5.3906
+
+## Broken Stick ##
+#morphospace
+    lambda=roxo.phypca$sdev^2
+    bsDimension(lambda) # 2 significant axis
+```
+
+```{r PaCA-Phylomorphospace Roxo et al.}
+roxo.PaCA.phypca=gm.prcomp(roxo.phylocoords, phy=trimmed.roxo.tree, align.to.phy=T)
+
+## Set colors for bt PCA
+roxo.phycol=bt.colblind_pal
+names(roxo.phycol)=levels(roxo.phyloclass$Subfam)
+roxo.phycol=roxo.phycol[match(roxo.phyloclass$Subfam,names(roxo.phycol))]
+roxo.PaCA.phypca$x[,2]=roxo.PaCA.phypca$x[,2]*-1
+roxo.PaCA.phypca$anc.x[,2]=roxo.PaCA.phypca$anc.x[,2]*-1
+
+pdf('./Output/Roxo.PACA.Phylomorphospace.pdf', width=7.2, height=5)
+plot(roxo.PaCA.phypca, phylo = T, time.plot = T, pch=21,  bg=roxo.phycol, cex=1.75, xlab = "PC1 (98.2%)", ylab = "PC2 (1.6%)", phylo.par = list(tip.labels = F, node.labels = F, anc.states = T, node.bg ="grey", node.cex = .5, edge.color = "grey", edge.width = 1.5, tip.txt.cex = .5, node.txt.cex = .75, node.txt.col = "grey", node.txt.adj = c(-0.1, -0.1)))
+addTextLabels(roxo.PaCA.phypca$x[,1], roxo.PaCA.phypca$x[,2], roxo.phyloclass$Figure, col.label=roxo.phycol)
+dev.off()
+
+summary(roxo.PaCA.phypca) #Proportion of Covariance	PC1:0.97636344	PC2:0.0126290342	
+meansummary=summary(roxo.PaCA.phypca)
+#write.csv(meansummary$PC.summary, file = "./Output/Phylomorphospace.Roxo.PaCA.txt")
+
+## Broken Stick ##
+#morphospace
+    lambda=roxo.PaCA.phypca$sdev^2
+    bsDimension(lambda) # 1 significant axis
+```
+
+```{r Backtransformation Phylomorphospace Roxo}
+## This code uses Stereomorpho exclusively
+## Need to load btShapes.R from
+## https://aaronolsen.github.io/tutorials/morphometrics/backtransform.html
+source('btShapes.R')
+
+## Save GPA Coords as object
+phylocoordsbt=arrayspecs(roxo.phylocoords, 33, 3)
+gpa_array=phylocoordsbt
+
+## Convert coords to be used in backtransformation
+gpa_mat=t(apply(gpa_array, 3, function(y) matrix(t(y),1)))
+resEig=eigen(cov(gpa_mat))
+scores=gpa_mat %*% resEig$vectors
+scores=scores[order(row.names(scores)),]
+per_var <- (resEig$values / sum(resEig$values))*100
+
+#resEig$vectors[,1]=resEig$vectors[,1]*-1
+resEig$vectors[,2]=resEig$vectors[,2]*-1
+#scores[,1]=scores[,1]*-1
+scores[,2]=scores[,2]*-1
+
+## Reduced color pal to match phylomorphospace families
+bt.colblind_pal=colorRampPalette(c("#470f65","#3b4f8c","#25858e", "#25ab7f", "#4ec266", "#d5e100"))
+bt.colblind_pal <- bt.colblind_pal(4)
+
+## Set colors for bt PCA
+phyloclass.bt=subset(aveclassifier, row.names(aveclassifier) %in% include)
+
+bt.col=bt.colblind_pal
+names(bt.col)=levels(phyloclass.bt$Subfam)
+bt.col=bt.col[match(phyloclass.bt$Subfam,names(bt.col))]
+
+## Function to generate outlines and bt
+outline_lateral=function(xy, coor, size=1, col='black'){
+  if(ncol(coor) == 3){
+		coor <- coor %*% matrix(c(1,0,0, 0,cos(-pi/2),sin(-pi/2),
+		0,-sin(-pi/2),cos(-pi/2)), nrow=3, ncol=3)
+	}
+	# Get just x,y coordinates (orthographic projection into xy-plane)
+	coor <- coor[, 1:2]
+	# Get plot aspect ratio
+	w <- par('pin')[1]/diff(par('usr')[1:2])
+	h <- par('pin')[2]/diff(par('usr')[3:4])
+	asp <- w/h
+	# Correct for plot aspect ratio not necessarily being 1:1
+	coor[, 1] <- coor[, 1] * (1/asp)
+	# Scale points and place back in position
+	coor <- coor*size
+	# Center about zero based on range of coordinates
+	coor <- coor - matrix(colMeans(apply(coor, 2, range)),
+		nrow=nrow(coor), ncol=ncol(coor), byrow=TRUE)
+	# Move shape to PC score
+	coor <- coor + matrix(xy, nrow(coor), ncol(coor), byrow=TRUE)
+
+	### Create shape
+	polygon_order = c(33,17,5,2,3,1,30,26,33)
+  line_order=c(6,8,12,10,6)
+
+	# Create filled polygon
+	polygon(coor[polygon_order, ], col = "#D3D3D3", border = "#D3D3D3")
+	polygon(coor[line_order, ], border = "black")
+
+}
+
+## Function to generate outlines and bt
+outline_ventral=function(xy, coor, size=1, col='black'){
+ 
+  # If 3D, rotate points about x-axis using 3D rotation matrix
+	if(ncol(coor) == 3){
+		coor <- coor %*% matrix(c(1,0,0, 0,cos(-pi/2),sin(-pi/2), 
+			0,-sin(-pi/2),cos(-pi/2)), nrow=3, ncol=3)
+	}
+  
+	# Get just x,y coordinates (orthographic projection into xy-plane)
+	coor <- coor[, c(1,3)]
+	# Get plot aspect ratio
+	w <- par('pin')[1]/diff(par('usr')[1:2])
+	h <- par('pin')[2]/diff(par('usr')[3:4])
+	asp <- w/h
+	# Correct for plot aspect ratio not necessarily being 1:1
+	coor[, 1] <- coor[, 1] * (1/asp)
+	# Scale points and place back in position
+	coor <- coor*size
+	# Center about zero based on range of coordinates
+	coor <- coor - matrix(colMeans(apply(coor, 2, range)),
+		nrow=nrow(coor), ncol=ncol(coor), byrow=TRUE)
+	# Move shape to PC score
+	coor <- coor + matrix(xy, nrow(coor), ncol(coor), byrow=TRUE)
+
+	### Create shape
+	polygon_order = c(33,22,25,29,2,30,26,23,33)
+	line_order=c(22,33,23,24,22)
+
+	# Create filled polygon
+	polygon(coor[polygon_order, ], col = "#D3D3D3", border = "#D3D3D3")
+	polygon(coor[line_order, ], border = "black")
+}
+
+## Generate Backtransformed PCA for PC1 and PC2
+
+pcs=1:2
+pdf('./Output/Roxo.LateralBT.Roxo.pdf', width=7.2, height=5)
+plot(scores[, pcs], type='n', xlab=paste0('PC', pcs[1], ' (', round(per_var[pcs[1]]), '%)'), ylab=paste0('PC', pcs[2], ' (', round(per_var[pcs[2]]), '%)'))
+btShapes(scores=scores, vectors=resEig$vectors, fcn=outline_lateral, pcs=pcs, n=c(6,5), m=dim(gpa_array)[2], row.names=dimnames(gpa_array)[[1]], pc.margin=c(0.06,0.05), size=0.25)
+points(scores[,pcs], pch=21, bg=bt.col, cex=1.25)
+text(scores[, pcs], labels=phyloclass.bt$Figure, cex=0.8, pos=4, offset=.5)
+dev.off()
+
+## Generate Backtransformed PCA for PC1 and PC2
+pcs=1:2
+pdf('./Output/Roxo.VentralBT.Roxo.pdf', width=7.2, height=5)
+plot(scores[, pcs], type='n',
+	xlab=paste0('PC', pcs[1], ' (', round(per_var[pcs[1]]), '%)'),
+	ylab=paste0('PC', pcs[2], ' (', round(per_var[pcs[2]]), '%)'))
+btShapes(scores=scores, vectors=resEig$vectors, fcn=outline_ventral, pcs=pcs, n=c(6,5), m=dim(gpa_array)[2], row.names=dimnames(gpa_array)[[1]], pc.margin=c(0.06,0.05), size=0.25)
+points(scores[,pcs], pch=21, bg=bt.col, cex=1.25)
+text(scores[, pcs], labels=phyloclass.bt$Figure, cex=0.8, pos=4, offset=.5)
+dev.off()
+```
+
+```{r Time Chunk Functions}
+AltDTT<-function(phy,data)
+{
+  TD<- treedata(phy, data, warnings=FALSE)
+  Morpho<-TD$data
+  tree<-TD$phy
+  tree<-multi2di(tree)
+  
+  InternalNodes=seq(from=length(tree$tip)+1, to=length(tree$tip)+tree$Nnode, by=1)
+  Times=vector()
+  n=0
+  for (i in InternalNodes){
+    n=n+1
+    Times[n]=branching.times(tree)[as.character(i)]
+  }
+  NodeDate=cbind(as.character(InternalNodes), as.character(Times)) 
+  options(stringsAsFactors=FALSE)
+  data<- data.frame(Group=tree$tip.label) 
+  NodeTimes=cbind(as.character(InternalNodes), as.character(Times)) 
+  TreeTips=tree$tip.label
+  Group0=rep("Group0", length(TreeTips))
+  TaxaMatrix=data.frame(cbind(TreeTips, Group0))
+  colName=NodeTimes[1,2]
+  Node=NodeTimes[1,1]
+  DaughterA=tree$edge[tree$edge[,1]== Node,2][1] 
+  DaughterB=tree$edge[tree$edge[,1]== Node,2][2] 
+  GroupNameA=paste(as.numeric(DaughterA)) 
+  GroupNameB=paste(as.numeric(DaughterB))
+  TaxaDaughterA=tips(tree, DaughterA)
+  TaxaDaughterB=tips(tree, DaughterB)
+  TaxaMatrix[TaxaMatrix[,"TreeTips"] %in% TaxaDaughterA,colName]=GroupNameA 
+  TaxaMatrix[TaxaMatrix[,"TreeTips"] %in% TaxaDaughterB,colName]=GroupNameB 
+  data[data[,"Group"] %in% TaxaDaughterA,colName]=GroupNameA 
+  data[data[,"Group"] %in% TaxaDaughterB,colName]=GroupNameB 
+  timeorder=order(Times, decreasing=T)
+  for ( i in 2:dim(NodeTimes)[1]){
+    NodeinOrd= timeorder[i]
+    colName=NodeTimes[NodeinOrd,2]
+    Node=NodeTimes[NodeinOrd,1]
+    DaughterA=tree$edge[tree$edge[,1]== Node,2][1]
+    DaughterB=tree$edge[tree$edge[,1]== Node,2][2]
+    GroupNameA=paste(as.numeric(DaughterA))
+    GroupNameB=paste(as.numeric(DaughterB))
+    TaxaDaughterA=tips(tree, DaughterA)
+    TaxaDaughterB=tips(tree, DaughterB)
+    NodeinOrd2=timeorder[i-1]
+    TaxaMatrix[,colName]=TaxaMatrix[,NodeTimes[NodeinOrd2,2]]
+    TaxaMatrix[TaxaMatrix[,"TreeTips"] %in% TaxaDaughterA,colName]=GroupNameA 
+    TaxaMatrix[TaxaMatrix[,"TreeTips"] %in% TaxaDaughterB,colName]=GroupNameB 
+    data[,colName]=data[,NodeTimes[NodeinOrd2,2]]
+    data[data[,"Group"] %in% TaxaDaughterA,colName]=GroupNameA
+    data[data[,"Group"] %in% TaxaDaughterB,colName]=GroupNameB
+  }
+  
+  Taxa<-seq(from=length(tree$tip)*2-1) 
+  MorphoMatrix <-data.frame(cbind(Taxa)) 
+  
+  #reorder morpho to match tree tips
+  Morpho[match(x = as.vector(tree$tip),table = rownames(Morpho)),]->Morpho
+  z<- ncol(Morpho)
+  for (i in 1:z){
+    AncestralState= fastAnc(tree, Morpho[,i])
+    character<- append( Morpho[,i], AncestralState)
+    MorphoMatrix<-data.frame(cbind(MorphoMatrix,character)) 
+  }
+  MorphoAncestors<-MorphoMatrix
+  pc1 <-prcomp(MorphoAncestors, scale. = T)
+  x <- pc1$x
+  PCAvalues <- as.matrix(x[ ,1:2]) 
+  PCAvalues<-data.frame(cbind(Taxa,PCAvalues))
+  
+  y<- ncol(TaxaMatrix)
+  subset(data,select = -Group)->data2
+  
+  DisparityOut<-data.frame() 
+  for (i in 3:y)
+  {
+    TaxaAtTime<-unique(TaxaMatrix[,i])
+    what<-as.matrix(TaxaAtTime)
+    Npoints<-nrow(what)
+    test<- subset(PCAvalues, PCAvalues$Taxa %in% TaxaAtTime)
+    test<- test[,2:3]
+    colnames(test)<- c("X","Y")
+    if (length(test$X) >2){
+      box.hpts <- chull(x = test$X, y = test$Y)
+      box.hpts <- c(box.hpts, box.hpts[1])
+      box.chull.coords <- test[box.hpts,]
+      chull.poly <- Polygon(box.chull.coords, hole=F)
+      chull.area <- chull.poly@area
+      chull.area->t0.disp
+    }
+    else {t0.disp<-0}
+    DisparityOut<-data.frame(rbind(DisparityOut,t0.disp)) 
+  }
+  
+  Divergencetimes<-as.numeric(colnames(data2))
+  cbind(DisparityOut,Divergencetimes*-1)->OutputTable
+  OutList<-list('output'=OutputTable,'MorphoMatrix'=data, "PCAvalues"=PCAvalues)
+  plot(OutputTable$`Divergencetimes * -1`,OutputTable$X0, type="l", ylab="Disparity",xlab="age")
+  return(OutList)
+}
+
+##For example run
+##AltDTT(phy,data)->OUTPUT
+
+
+SubsetDTT<-function(DATA=DATA,PCAvalues=PCAvalues,SUBSET=c(1:5),COL="red")
+{
+  SubsetMatrix<-DATA[SUBSET,]
+  
+  y<- ncol(SubsetMatrix)
+  
+  DisparityOutC<-data.frame() 
+  for (i in 2:y)
+  {
+    TaxaAtTime<-unique(SubsetMatrix[,i])
+    what<-as.matrix(TaxaAtTime)
+    Npoints<-nrow(what)
+    test<- subset(PCAvalues, PCAvalues$Taxa %in% TaxaAtTime)
+    test<- test[,2:3]
+    colnames(test)<- c("X","Y")
+    if (length(test$X) >2){
+      box.hpts <- chull(x = test$X, y = test$Y)
+      box.hpts <- c(box.hpts, box.hpts[1])
+      box.chull.coords <- test[box.hpts,]
+      chull.poly <- Polygon(box.chull.coords, hole=F)
+      chull.area <- chull.poly@area
+      chull.area->t0.disp
+    }else{ 
+      t0.disp<-0
+    }
+    DisparityOutC<-data.frame(rbind(DisparityOutC,t0.disp)) 
+  }
+  TAXA<-subset(SubsetMatrix,select = Group)
+  subset(SubsetMatrix,select = -Group)->SubsetMatrix
+  DivergencetimesC<-as.numeric(unique(colnames(SubsetMatrix)))
+  cbind(DivergencetimesC*-1,DisparityOutC)->OutputTableC
+  lines(OutputTableC, type="l", xlab="time", ylab="disparity", lwd=2, col=COL)
+  
+    OutList<-list('output'=OutputTableC)
+  return(OutList)
+}
+```
+
+```{r Time Chunks Phylomorphospace Roxo et al.}
+AltDTT(trimmed.roxo.tree, roxo.phylocoords)->OUTPUT
+OUTPUT$MorphoMatrix->TotalMatrix
+OUTPUT$PCAvalues->PCAvalues
+
+#To plot morphospace growth in subclades the following code will track taxonomic subsets (SUBSET;Easy to ID these species using the TotalMatrix output from above) 
+
+#to make a movie of the of image files of the DTT analysis that can be converted into a movie
+
+dir.create(file.path(getwd(), "PCAplot"))
+setwd("PCAplot")
+
+y<- ncol(TotalMatrix)
+
+#Create appropriate subdivisions
+
+Clade1<-TotalMatrix[1:5,]
+Clade2<-TotalMatrix[6:22,]  
+Clade3<-TotalMatrix[23:32,]
+
+
+#Set limits for plotting 
+
+min(PCAvalues[,2]*1.2)->minX
+max(PCAvalues[,2]*1.2)->maxX
+min(PCAvalues[,3]*1.2)->minY
+max(PCAvalues[,3]*1.2)->maxY
+
+#Plot all timeslices 
+
+for (i in 2:y)
+{  
+  
+  AlltaxaAtTime<-unique(TotalMatrix$Group)
+  testAll<- subset(PCAvalues, row.names(PCAvalues) %in% AlltaxaAtTime) 
+  testAll<- testAll[,2:3]
+  colnames(testAll)<- c("X","Y")        
+  calcConvexHull(testAll)->polyPtsAll
+  
+  Clade1TaxaAtTime<-unique(Clade1[,i])
+  testClade1<- subset(PCAvalues, PCAvalues$Taxa %in% Clade1TaxaAtTime) 
+  testClade1<- testClade1[,2:3]
+  colnames(testClade1)<- c("X","Y")        
+  calcConvexHull(testClade1)->polyPts1
+  
+  Clade2TaxaAtTime <-unique(Clade2[,i])
+  testClade2<- subset(PCAvalues, PCAvalues$Taxa %in% Clade2TaxaAtTime) 
+  testClade2 <- testClade2[,2:3]
+  colnames(testClade2)<- c("X","Y")        
+  calcConvexHull(testClade2)->polyPts2
+  
+  Clade3TaxaAtTime <-unique(Clade3[,i])
+  testClade3<- subset(PCAvalues, PCAvalues$Taxa %in% Clade3TaxaAtTime) 
+  testClade3 <- testClade3[,2:3]
+  colnames(testClade3)<- c("X","Y")        
+  calcConvexHull(testClade3)->polyPts3
+
+  
+  filename<-paste("PolyPCA",i,".jpg", sep = "")
+  jpeg(file = filename,width = 1500,height = 1200)
+  plotPolys(polyPtsAll, xlim =c(minX,maxX), ylim =c(minY,maxY))
+    addPolys(polyPts1, col="#DACFE0")
+  addPolys(polyPts2,col="#D5E3E8")
+  addPolys(polyPts3,col = "#F7F9CC")
+
+
+points(testAll,pch=21,col="white")
+  points(testAll)
+  points(testClade1,pch=21,col="#470F65")
+  points(testClade1)
+  points(testClade2,pch=21,col="#2C738D")
+  points(testClade2)
+  points(testClade3,pch=21,col="#D5E100")
+  points(testClade3)
+
+  abline(h = 0, v = 0)
+  dev.off()
+  
+}
+sprintf("PolyPCA%1d.jpg",2:y)->jpg_files
+av_encode_video(jpg_files, 'output.mp4', framerate = 5)
+
+
+setwd('..')
+
+
+pdf('./Output/DisparityTTime.pdf', width=7.2, height=5)
+AltDTT(trimmed.roxo.tree, roxo.phylocoords)
+SubsetDTT(DATA = TotalMatrix,PCAvalues = PCAvalues,SUBSET = c(1:5),COL = "#470F65")
+SubsetDTT(DATA = TotalMatrix,PCAvalues = PCAvalues,SUBSET = c(6:22),COL = "#2C738D")
+SubsetDTT(DATA = TotalMatrix,PCAvalues = PCAvalues,SUBSET = c(23:32),COL = "#D5E100")
+
+par(fig = c(0.05,0.5, .25, .98), new = T)
+plot(NULL, xlim=c(-40,0), ylim=c(0,45), xlab="", ylab="", cex.axis=.75)
+SubsetDTT(DATA = TotalMatrix,PCAvalues = PCAvalues,SUBSET = c(1:5),COL = "#470F65")
+SubsetDTT(DATA = TotalMatrix,PCAvalues = PCAvalues,SUBSET = c(6:22),COL = "#2C738D")
+SubsetDTT(DATA = TotalMatrix,PCAvalues = PCAvalues,SUBSET = c(23:32),COL = "#D5E100")
+dev.off()
+
+
+times=AltDTT(trimmed.roxo.tree, roxo.phylocoords)
+plot(NULL, xlim=c(-40,0), ylim=c(0,45), xlab="", ylab="", cex.axis=.75)
+time1=SubsetDTT(DATA = TotalMatrix,PCAvalues = PCAvalues,SUBSET = c(1:5),COL = "#470F65")
+time2=SubsetDTT(DATA = TotalMatrix,PCAvalues = PCAvalues,SUBSET = c(6:22),COL = "#2C738D")
+time3=SubsetDTT(DATA = TotalMatrix,PCAvalues = PCAvalues,SUBSET = c(23:32),COL = "#D5E100")
+
+write.csv(times$output, file = "./Output/DivergenceTimes.txt")
+```
+
+```{r Modularity: EMMLiv2}
+## model comparisons
+mod.models=read.csv("Mod_Int/modules.03jan22.csv")
+mod.coords=arrayspecs(phylocoords, 33, 3)
+
+## PhyloCorrect EMMLi
+PCEm=phyloEmmli(mod.coords, trimmed.tree, method = "pgls", EMMLi = T, mod = mod.models, N_sample = 49, "./Output/modularity.PC.csv") #7.mod.sep.Mod + sep.between best model
+
+# Figures
+net.layout=read.csv("Mod_Int/network.layout.csv", row.names = 1) #set layout of nodes
+
+#network for EMMLi phylo corrected
+emmli.output.PC=read.csv("./Mod_Int/emmli.phylo.csv", row.names = 1)
+emmli.within.PC=read.csv("./Mod_Int/emmli.phylo.within.csv", row.names = 1)
+
+Q.PC.Colors=colorRampPalette(c("#808080","#000000"))
+
+Q.PC=qgraph(emmli.output.PC, vsize=emmli.within.PC$X1*15, edge.color=Q.PC.Colors(20))
+Q.PC$layout=net.layout
+
+pdf("./Output/Modularity.EMMLi.PC.pdf", width=7.2, height=5)
+plot(Q.PC)
+dev.off()
+```
+
+```{r Modularity: CR}
+### Creating modularity hypotheses
+# 1) Creating the hypothesis matrix
+LM_no<-c(1:33)
+structure<-rep("NA", 33)
+structure[c(14,15,22,23,24,33)]<-"mouth"
+structure[c(6,7,8,9,10,11,12,13,16,17)]<-"head"
+structure[c(18,19,20,21)]<-"oper"
+structure[c(25,26,27,28)]<-"pectoralfin"
+structure[c(5)]<-"dorsalfin"
+structure[c(29,30,31,32)]<-"pelvicfin"
+structure[c(2,3)]<-"caudalfin"
+structure[c(1,4)]<-"analcloaca"
+structure
+
+# 2) Modularity hypotheses
+#Full integration
+hyp1<-rep("A", 33)
+
+#All Separate (best supported model via EMMLi - Likelihood) #7.mod
+hyp2<-rep("NA", 33)
+hyp2[structure=="mouth"]<-"A"
+hyp2[structure=="head"]<-"B"
+hyp2[structure=="oper"]<-"C"
+hyp2[structure=="pectoralfin" | structure=="dorsalfin"]<-"D"
+hyp2[structure=="pelvicfin"]<-"E"
+hyp2[structure=="analcloaca"]<-"F"
+hyp2[structure=="caudalfin"]<-"G"
+
+#6.mod
+hyp3<-rep("NA", 33)
+hyp3[structure=="mouth"]<-"A"
+hyp3[structure=="head" | structure=="oper"]<-"B"
+hyp3[structure=="pectoralfin" | structure=="dorsalfin"]<-"C"
+hyp3[structure=="pelvicfin"]<-"D"
+hyp3[structure=="analcloaca"]<-"E"
+hyp3[structure=="caudalfin"]<-"F"
+
+#L4 hypothesis - 2 modules (head+pectoral fins vs. rest of body)
+hypL4<-rep("NA", 33)
+hypL4[structure=="mouth" | structure=="head" | structure=="oper" | structure=="pectoralfin"]<-"A"
+hypL4[structure=="dorsalfin" | structure=="pelvicfin" | structure=="caudalfin" | structure=="analcloaca"]<-"B"
+
+#L5 hypothesis - 3 modules (head, midbody, tail)
+hypL5<-rep("NA", 33)
+hypL5[structure=="mouth" | structure=="head" | structure=="oper"]<-"A"
+hypL5[structure=="dorsalfin" | structure=="pelvicfin" | structure=="pectoralfin"]<-"B"
+hypL5[ structure=="caudalfin" | structure=="analcloaca"]<-"C"
+
+#4.mod
+hyp6<-rep("NA", 33)
+hyp6[structure=="mouth"]<-"A"
+hyp6[structure=="head" | structure=="oper"]<-"B"
+hyp6[structure=="dorsalfin" | structure=="pelvicfin" | structure=="pectoralfin"]<-"C"
+hyp6[ structure=="caudalfin" | structure=="analcloaca"]<-"D"
+
+#3.mod
+hyp7<-rep("NA", 33)
+hyp7[structure=="mouth" | structure=="head" | structure=="oper"]<-"A"
+hyp7[structure=="dorsalfin" | structure=="pelvicfin" | structure=="pectoralfin"]<-"B"
+hyp7[structure=="caudalfin" | structure=="analcloaca"]<-"C"
+
+#2.mod
+hyp8<-rep("NA", 33)
+hyp8[structure=="mouth" | structure=="head" | structure=="oper"]<-"A"
+hyp8[structure=="dorsalfin" | structure=="pelvicfin" | structure=="pectoralfin" | structure=="caudalfin" | structure=="analcloaca"]<-"B"
+
+
+# 3) Combine hypotheses
+hyp_mat<-cbind(LM_no, structure, hyp1, hyp2, hyp3, hypL4, hypL5, hyp6, hyp7, hyp8)
+
+### Modularity tests ###
+#tree<-pruned_tree
+allsep<-phylo.modularity(mod.coords, hyp_mat[,4], trimmed.tree, iter=999)
+funct1<-phylo.modularity(mod.coords, hyp_mat[,5], trimmed.tree, iter=999)
+funct2<-phylo.modularity(mod.coords, hyp_mat[,6], trimmed.tree, iter=999)
+funct3<-phylo.modularity(mod.coords, hyp_mat[,7], trimmed.tree, iter=999)
+funct4<-phylo.modularity(mod.coords, hyp_mat[,8], trimmed.tree, iter=999)
+funct5<-phylo.modularity(mod.coords, hyp_mat[,9], trimmed.tree, iter=999)
+funct6<-phylo.modularity(mod.coords, hyp_mat[,10], trimmed.tree, iter=999)
+
+#Comparing the effect sizes from these different hypotheses
+best_hyp<-compare.CR(allsep, funct1, funct2, funct3, funct4, funct5, funct6, CR.null = F)
+
+summary(best_hyp) #BM also supports the 7mod (all separate) -4.425087
+
+allsep$CR.mat
+intergration.data=phylo.integration(mod.coords, phy=trimmed.tree, partition.gp =hyp_mat[,4], iter=999)
+
+#network for CR
+CR.output.PC=read.csv("Mod_Int//geomorph.output.csv", row.names = 1)
+#CR.within.PC=read.csv("~/Desktop/Research Projects/Dis_Ch2_AC Body Shape/0_Raw Data/!Analysis/emmli.phylo.within.csv", row.names = 1)
+
+Q.PC.Colors=colorRampPalette(c("#808080","#000000"))
+
+Q.PC=qgraph(CR.output.PC, edge.color=Q.PC.Colors(20))
+Q.PC$layout=net.layout
+
+pdf("Output//Modularity.CR.PC.pdf", width=7.2, height=5)
+plot(Q.PC)
+dev.off()
+
+#network for PLS
+PLS.output.PC=read.csv("Mod_Int/geomorph.inter.output.csv", row.names = 1)
+#CR.within.PC=read.csv("~/Desktop/Research Projects/Dis_Ch2_AC Body Shape/0_Raw Data/!Analysis/emmli.phylo.within.csv", row.names = 1)
+
+Q.PC.Colors=colorRampPalette(c("#808080","#000000"))
+
+Q.PC=qgraph(PLS.output.PC, edge.color=Q.PC.Colors(20))
+Q.PC$layout=net.layout
+
+pdf("./Output/Modularity.PLS.PC.pdf", width=7.2, height=5)
+plot(Q.PC)
+dev.off()
+```
+
+```{r SET UP: Modularity by subfamily}
+Clade1<-phylocoords[1:36,]
+Clade2<-phylocoords[37:41,]
+Clade3<-phylocoords[42:49,]
+
+mod.Clade1=arrayspecs(Clade1, 33, 3)
+mod.Clade2=arrayspecs(Clade2, 33, 3)
+mod.Clade3=arrayspecs(Clade3, 33, 3)
+
+species=as.factor(row.names(Clade1))
+Hypostominae.trimmed.tree=drop.tip(tree,tree$tip.label[-na.omit(match(species, tree$tip.label))])
+
+species=as.factor(row.names(Clade2))
+Hypoptopomatinae.trimmed.tree=drop.tip(tree,tree$tip.label[-na.omit(match(species, tree$tip.label))])
+
+species=as.factor(row.names(Clade3))
+Loricariinae.trimmed.tree=drop.tip(tree,tree$tip.label[-na.omit(match(species, tree$tip.label))])
+```
+
+```{r Modularity by Hypostominae}
+### CLADE 1: Hypostominae ###
+### Modularity tests ###
+allsep<-phylo.modularity(mod.Clade1, hyp_mat[,4], Hypostominae.trimmed.tree, iter=999)
+funct1<-phylo.modularity(mod.Clade1, hyp_mat[,5], Hypostominae.trimmed.tree, iter=999)
+funct2<-phylo.modularity(mod.Clade1, hyp_mat[,6], Hypostominae.trimmed.tree, iter=999)
+funct3<-phylo.modularity(mod.Clade1, hyp_mat[,7], Hypostominae.trimmed.tree, iter=999)
+funct4<-phylo.modularity(mod.Clade1, hyp_mat[,8], Hypostominae.trimmed.tree, iter=999)
+funct5<-phylo.modularity(mod.Clade1, hyp_mat[,9], Hypostominae.trimmed.tree, iter=999)
+funct6<-phylo.modularity(mod.Clade1, hyp_mat[,10], Hypostominae.trimmed.tree, iter=999)
+
+#Comparing the effect sizes from these different hypotheses
+best_hyp<-compare.CR(allsep, funct1, funct2, funct3, funct4, funct5, funct6, CR.null = F)
+
+summary(best_hyp) #BM supports the funct4 - #4.mod; hyp6[structure=="mouth"]<-"A"; hyp6[structure=="head" | structure=="oper"]<-"B"; hyp6[structure=="dorsalfin" | structure=="pelvicfin" | structure=="pectoralfin"]<-"C"; hyp6[ structure=="caudalfin" | structure=="analcloaca"]<-"D"
+
+funct4$CR.mat
+intergration.data=phylo.integration(mod.Clade1, phy=Hypostominae.trimmed.tree, partition.gp =hyp_mat[,8], iter=999)
+```
+
+```{r Modularity by Hypoptopomatinae}
+### CLADE 1: Hypoptopomatinae ###
+### Modularity tests ###
+allsep<-phylo.modularity(mod.Clade2, hyp_mat[,4], Hypoptopomatinae.trimmed.tree, iter=999)
+funct1<-phylo.modularity(mod.Clade2, hyp_mat[,5], Hypoptopomatinae.trimmed.tree, iter=999)
+funct2<-phylo.modularity(mod.Clade2, hyp_mat[,6], Hypoptopomatinae.trimmed.tree, iter=999)
+funct3<-phylo.modularity(mod.Clade2, hyp_mat[,7], Hypoptopomatinae.trimmed.tree, iter=999)
+funct4<-phylo.modularity(mod.Clade2, hyp_mat[,8], Hypoptopomatinae.trimmed.tree, iter=999)
+funct5<-phylo.modularity(mod.Clade2, hyp_mat[,9], Hypoptopomatinae.trimmed.tree, iter=999)
+funct6<-phylo.modularity(mod.Clade2, hyp_mat[,10], Hypoptopomatinae.trimmed.tree, iter=999)
+
+#Comparing the effect sizes from these different hypotheses
+best_hyp<-compare.CR(allsep, funct1, funct2, funct3, funct4, funct5, funct6, CR.null = F)
+
+summary(best_hyp) #BM also supports 7.modules: ALL SEP
+
+allsep$CR.mat
+intergration.data2=phylo.integration(mod.Clade2, phy=Hypoptopomatinae.trimmed.tree, partition.gp =hyp_mat[,4], iter=999)
+```
+
+```{r Modularity by Loricariinae}
+### CLADE 1: Loricariinae ###
+### Modularity tests ###
+allsep<-phylo.modularity(mod.Clade3, hyp_mat[,4], Loricariinae.trimmed.tree, iter=999)
+funct1<-phylo.modularity(mod.Clade3, hyp_mat[,5], Loricariinae.trimmed.tree, iter=999)
+funct2<-phylo.modularity(mod.Clade3, hyp_mat[,6], Loricariinae.trimmed.tree, iter=999)
+funct3<-phylo.modularity(mod.Clade3, hyp_mat[,7], Loricariinae.trimmed.tree, iter=999)
+funct4<-phylo.modularity(mod.Clade3, hyp_mat[,8], Loricariinae.trimmed.tree, iter=999)
+funct5<-phylo.modularity(mod.Clade3, hyp_mat[,9], Loricariinae.trimmed.tree, iter=999)
+funct6<-phylo.modularity(mod.Clade3, hyp_mat[,10], Loricariinae.trimmed.tree, iter=999)
+
+#Comparing the effect sizes from these different hypotheses
+best_hyp<-compare.CR(allsep, funct1, funct2, funct3, funct4, funct5, funct6, CR.null = F)
+
+summary(best_hyp) #BM supports allsep @ -3.9490892
+
+allsep$CR.mat
+intergration.data3=phylo.integration(mod.Clade3, phy=Loricariinae.trimmed.tree, partition.gp =hyp_mat[,4], iter=999)
+```
+
+```{r Networks for Subfamilies}
+# Figures
+net.layout.Hypop.Lori =read.csv("Mod_Int/network.layout.csv", row.names = 1) #set layout of nodes
+
+  net.layout.Hypos =read.csv("Mod_Int/network.layout.Hypos.csv", row.names = 1) #set layout of nodes
+
+#network for Hypostominae
+Hypos.modularity=read.csv("Mod_Int/Hypos.Modular.csv", row.names = 1)
+Hypos.intergration=read.csv("Mod_Int/Hypos.Inter.csv", row.names = 1)
+
+Hypos.Colors=colorRampPalette(c("#808080","#000000"))
+
+Hypos.PC=qgraph(Hypos.modularity, edge.color=Hypos.Colors(20))
+Hypos.PC$layout=net.layout.Hypos
+
+Hypos.PC.int=qgraph(Hypos.intergration, edge.color=Hypos.Colors(20))
+Hypos.PC.int$layout=net.layout.Hypos
+
+pdf("./Output/ModularityIntergration.Hypos.pdf", width=7.2, height=10)
+par(mfrow=c(2,1))
+plot(Hypos.PC)
+plot(Hypos.PC.int)
+dev.off()
+
+#############
+#network for Hypoptopomatinae
+Hypop.modularity=read.csv("Mod_Int/Hypop.Modular.csv", row.names = 1)
+Hypop.intergration=read.csv("Mod_Int/Hypop.Inter.csv", row.names = 1)
+
+NetworkColors=colorRampPalette(c("#808080","#000000"))
+
+Hypop.PC=qgraph(Hypop.modularity, edge.color=NetworkColors(20))
+Hypop.PC$layout=net.layout.Hypop.Lori
+
+Hypop.PC.int=qgraph(Hypop.intergration, edge.color=NetworkColors(20))
+Hypop.PC.int$layout=net.layout.Hypop.Lori
+
+pdf("./Output/ModularityIntergration.Hypop.pdf", width=7.2, height=10)
+par(mfrow=c(2,1))
+plot(Hypop.PC)
+plot(Hypop.PC.int)
+dev.off()
+
+#############
+#network for Loricariinae
+Lori.modularity=read.csv("Mod_Int/Lori.Modular.csv", row.names = 1)
+Lori.intergration=read.csv("Mod_Int/Lori.Inter.csv", row.names = 1)
+
+NetworkColors=colorRampPalette(c("#808080","#000000"))
+
+Lori.PC=qgraph(Lori.modularity, edge.color=NetworkColors(20))
+Lori.PC$layout=net.layout.Hypop.Lori
+
+Lori.PC.int=qgraph(Lori.intergration, edge.color=NetworkColors(20))
+Lori.PC.int$layout=net.layout.Hypop.Lori
+
+pdf("./Output/ModularityIntergration.Lori.pdf", width=7.2, height=10)
+par(mfrow=c(2,1))
+plot(Lori.PC)
+plot(Lori.PC.int)
+dev.off()
+```
+
+```{r Modularity: Evolution Rates BM All Specimens}
+#Evolutionary rates of modules
+ratesallsep<-compare.multi.evol.rates(A=mod.coords, gp=hyp_mat[,4], phy=trimmed.tree, iter=999) #7.mod - best supported via EMMLi and CR
+ratesallsep
+
+evocol=as.matrix(ratesallsep$sigma.d.gp)
+
+bt.colblind_pal=colorRampPalette(c("#470f65","#3b4f8c","#25858e", "#25ab7f", "#4ec266", "#d5e100"))
+evocol.Col <- bt.colblind_pal(10)[as.numeric(cut(evocol,breaks = 10))]
+
+pdf(file = "./Output/ModuleEvoRates.Colors.pdf", width=7, height=5)
+plot(c(1,2,3,4,5,6,7), evocol, pch=19, col=evocol.Col, cex=4)
+dev.off()
+
+# Lesser Models 
+ratesfunct4<-compare.multi.evol.rates(A=mod.coords, gp=hyp_mat[,8], phy=trimmed.tree, iter=999) #4.mod - 2nd best CR; 
+
+ratesfunct1<-compare.multi.evol.rates(A=mod.coords, gp=hyp_mat[,5], phy=trimmed.tree, iter=999) #6.mod - 3rd best CR;
+
+ratesfunct6<-compare.multi.evol.rates(A=mod.coords, gp=hyp_mat[,10], phy=trimmed.tree, iter=999) #2.mod - 4th best CR;
+
+ratesfunct3<-compare.multi.evol.rates(A=mod.coords, gp=hyp_mat[,7], phy=trimmed.tree, iter=999) #L5 - 5th best CR;
+
+ratesfunct5<-compare.multi.evol.rates(A=mod.coords, gp=hyp_mat[,9], phy=trimmed.tree, iter=999) #3.mod - 6th CR;
+
+ratesfunct2<-compare.multi.evol.rates(A=mod.coords, gp=hyp_mat[,6], phy=trimmed.tree, iter=999) #L4 - 7th CR;
+```
+
+```{r Modularity: Evolution Rates BM Hypostominae}
+#Evolutionary rates of modules
+ratesallsep1<-compare.multi.evol.rates(A=mod.Clade1, gp=hyp_mat[,8], phy=Hypostominae.trimmed.tree, iter=999) #7.mod - best supported via EMMLi and CR
+ratesallsep1
+
+evocol1=as.matrix(ratesallsep1$sigma.d.gp)
+
+bt.colblind_pal=colorRampPalette(c("#470f65","#3b4f8c","#25858e", "#25ab7f", "#4ec266", "#d5e100"))
+evocol.Col1 <- bt.colblind_pal(10)[as.numeric(cut(evocol1,breaks = 10))]
+
+pdf(file = "./Output/ModuleEvoRates.Hypostominae.Colors.pdf", width=7, height=5)
+plot(c(1,2,3,4), evocol1, pch=19, col=evocol.Col1, cex=4)
+dev.off()
+```
+
+```{r Modularity: Evolution Rates BM Hypoptopomatinae}
+#Evolutionary rates of modules
+ratesallsep2<-compare.multi.evol.rates(A=mod.Clade2, gp=hyp_mat[,4], phy=Hypoptopomatinae.trimmed.tree, iter=999) #7.mod - best supported via EMMLi and CR
+ratesallsep2
+
+evocol2=as.matrix(ratesallsep2$sigma.d.gp)
+
+bt.colblind_pal=colorRampPalette(c("#470f65","#3b4f8c","#25858e", "#25ab7f", "#4ec266", "#d5e100"))
+evocol.Col2 <- bt.colblind_pal(10)[as.numeric(cut(evocol2,breaks = 10))]
+
+pdf(file = "./Output/ModuleEvoRates.Hypoptopomatinae.Colors.pdf", width=7, height=5)
+plot(c(1,2,3,4,5,6,7), evocol2, pch=19, col=evocol.Col2, cex=4)
+dev.off()
+```
+
+```{r Modularity: Evolution Rates Loricariinae}
+#Evolutionary rates of modules
+ratesallsep3<-compare.multi.evol.rates(A=mod.Clade3, gp=hyp_mat[,4], phy=Loricariinae.trimmed.tree, iter=999) #7.mod - best supported via EMMLi and CR
+ratesallsep3
+
+evocol3=as.matrix(ratesallsep3$sigma.d.gp)
+
+bt.colblind_pal=colorRampPalette(c("#470f65","#3b4f8c","#25858e", "#25ab7f", "#4ec266", "#d5e100"))
+evocol.Col3 <- bt.colblind_pal(10)[as.numeric(cut(evocol3,breaks = 10))]
+
+pdf(file = "./Output/ModuleEvoRates.Loricariinae.Colors.pdf", width=7, height=5)
+plot(c(1,2,3,4,5,6,7), evocol3, pch=19, col=evocol.Col3, cex=4)
+dev.off()
+```
+
+```{r Modularity: Evolution Rates FIGURE}
+pdf(file = "./Output/ModuleEvoRates.ALL.Colors.pdf", width=5, height=5)
+
+par(mfrow=c(2,2))
+plot(c(1,2,3,4,5,6,7), evocol, pch=19, col=evocol.Col, cex=3)
+plot(c(1,2,3,4), evocol1, pch=19, col=evocol.Col1, cex=3)
+plot(c(1,2,3,4,5,6,7), evocol2, pch=19, col=evocol.Col2, cex=3)
+plot(c(1,2,3,4,5,6,7), evocol3, pch=19, col=evocol.Col3, cex=3)
+
+dev.off()
+```
+
+
+```{r Test Evo Models: mvMorph}
+library(mvMORPH)
+sig_axes = bsDimension(lambda)
+PCA_sig <- phypca$x[trimmed.tree$tip.label, 1:sig_axes]
+
+fit_1 <- mvBM(trimmed.tree, PCA_sig, model = "BM1") #BestFit AICc: -139.707
+fit_2 <- mvOU(trimmed.tree, PCA_sig, model = "OU1") #AICc:-135.0555
+
+fit_1$AICc; fit_2$AICc
+```
+
+```{r Shape: Evolutionary Rate}
+lnShape=phypca$x[,1]
+fit.shape=multirateBM(trimmed.tree, lnShape, n.iter = 3)
+fit.shape
+plot(fit.shape)
+
+evorate.plot=plot(fit.shape)
+evorate.plot=setMap(evorate.plot, colors=bt.colblind_pal(100))
+#plot(evorate.plot, ftype="i", fsize=0.8, outline=TRUE)
+
+pdf(file = "./Output/ShapeEvolutionaryRates.pdf", width=5, height=7)
+plot(evorate.plot, fsize=0.75, digit=1, outline=T)
+dev.off()
+```
+
+```{r Shape: Evolutionary Rates for each Module}
+#isolate mouth landmarks and run evo rates
+mod.coords.mouth=mod.coords[c(14,15,22,23,24,33),,]
+mouth.pca=gm.prcomp(mod.coords.mouth, phy=trimmed.tree, align.to.phy=T)
+mouth.shape=mouth.pca$x[,1]
+fit.mouth.shape=multirateBM(trimmed.tree, mouth.shape, n.iter = 3)
+plot(fit.mouth.shape)
+evorate.mouth.plot=plot(fit.mouth.shape)
+evorate.mouth.plot=setMap(evorate.mouth.plot, colors=bt.colblind_pal(100))
+
+#isolate head landmarks and run evo rates
+mod.coords.head=mod.coords[c(6,7,8,9,10,11,12,13,16,17),,]
+head.pca=gm.prcomp(mod.coords.head, phy=trimmed.tree, align.to.phy=T)
+head.shape=head.pca$x[,1]
+fit.head.shape=multirateBM(trimmed.tree, head.shape, n.iter = 3)
+evorate.head.plot=plot(fit.head.shape)
+evorate.head.plot=setMap(evorate.head.plot, colors=bt.colblind_pal(100))
+
+mod.coords.oper=mod.coords[c(18,19,20,21),,]
+oper.pca=gm.prcomp(mod.coords.oper, phy=trimmed.tree, align.to.phy=T)
+oper.shape=oper.pca$x[,1]
+fit.oper.shape=multirateBM(trimmed.tree, oper.shape, n.iter = 3)
+evorate.oper.plot=plot(fit.oper.shape)
+evorate.oper.plot=setMap(evorate.oper.plot, colors=bt.colblind_pal(100))
+
+mod.coords.pectoralfin=mod.coords[c(25,26,27,28,5),,]
+pectoralfin.pca=gm.prcomp(mod.coords.pectoralfin, phy=trimmed.tree, align.to.phy=T)
+pectoralfin.shape=pectoralfin.pca$x[,1]
+fit.pectoralfin.shape=multirateBM(trimmed.tree, pectoralfin.shape, n.iter = 3)
+evorate.pectoralfin.plot=plot(fit.pectoralfin.shape)
+evorate.pectoralfin.plot=setMap(evorate.pectoralfin.plot, colors=bt.colblind_pal(100))
+
+mod.coords.pelvicfin=mod.coords[c(29,30,31,32),,]
+pelvicfin.pca=gm.prcomp(mod.coords.pelvicfin, phy=trimmed.tree, align.to.phy=T)
+pelvicfin.shape=pelvicfin.pca$x[,1]
+fit.pelvicfin.shape=multirateBM(trimmed.tree, pelvicfin.shape, n.iter = 3)
+evorate.pelvicfin.plot=plot(fit.pelvicfin.shape)
+evorate.pelvicfin.plot=setMap(evorate.pelvicfin.plot, colors=bt.colblind_pal(100))
+
+mod.coords.analcloaca=mod.coords[c(1,4),,]
+analcloaca.pca=gm.prcomp(mod.coords.analcloaca, phy=trimmed.tree, align.to.phy=T)
+analcloaca.shape=analcloaca.pca$x[,1]
+fit.analcloaca.shape=multirateBM(trimmed.tree, analcloaca.shape, n.iter = 3)
+evorate.analcloaca.plot=plot(fit.analcloaca.shape)
+evorate.analcloaca.plot=setMap(evorate.analcloaca.plot, colors=bt.colblind_pal(100))
+
+mod.coords.caudalfin=mod.coords[c(2,3),,]
+caudalfin.pca=gm.prcomp(mod.coords.caudalfin, phy=trimmed.tree, align.to.phy=T)
+caudalfin.shape=caudalfin.pca$x[,1]
+fit.caudalfin.shape=multirateBM(trimmed.tree, caudalfin.shape, n.iter = 3)
+evorate.caudalfin.plot=plot(fit.caudalfin.shape)
+evorate.caudalfin.plot=setMap(evorate.caudalfin.plot, colors=bt.colblind_pal(100))
+
+evorates4all <- rbind(fit.shape$sig2, fit.mouth.shape$sig2, fit.head.shape$sig2, fit.oper.shape$sig2, fit.pectoralfin.shape$sig2, fit.pelvicfin.shape$sig2, fit.analcloaca.shape$sig2, fit.caudalfin.shape$sig2)
+
+evorates4all=t(evorates4all)
+
+colnames(evorates4all)=c("AllModules","Mouth","Head","Opercula","Pec.DorsalFins","PelvicFins","AnalArea","CaudalPeduncle")
+
+write.csv(evorates4all, file = "./Output/evolutionaryrates.txt")
+
+pdf(file = "./Output/ShapeEvolutionaryRates.modules.pdf", width=7, height=5)
+layout(matrix(1:8,1,8),widths=c(0.30,0.30,0.3,.3,.3,.3,.3,.2))
+plot(evorate.mouth.plot, fsize=0.6, digit=1, ftype="off", outline=T)
+plot(evorate.head.plot, fsize=0.6, digit=1, ftype="off", outline=T)
+plot(evorate.oper.plot, fsize=0.6, digit=1, ftype="off", outline=T)
+plot(evorate.pectoralfin.plot, fsize=0.6, digit=1, ftype="off", outline=T)
+plot(evorate.pelvicfin.plot, fsize=0.6, digit=1, ftype="off", outline=T)
+plot(evorate.analcloaca.plot, fsize=0.6, digit=1, ftype="off", outline=T)
+plot(evorate.caudalfin.plot, fsize=0.6, digit=1, ftype="off", outline=T)
+plot.new()
+plot.window(xlim=c(-0.09,0.1),
+    ylim=get("last_plot.phylo",envir=.PlotPhyloEnv)$y.lim)
+par(cex=0.6)
+text(rep(0,length(fit.caudalfin.shape$tree$tip.label)),1:Ntip(fit.caudalfin.shape$tree),
+    gsub("_"," ",fit.caudalfin.shape$tree$tip.label),font=3)
+dev.off()
+```
+
+```{r Convergence}
+phendata<-phypca$x[,1:2]
+convtips<-c("Corumbataia_tocantinensis","Exastilithoxus_sp","Lithogenes_villosus", "Isorineloricaria_spinosissima")
+#convtips<-c("Otocinclus_vestitus","Paralithoxus_bovallii","Dolichancistrus_cobrensis")
+answer1<-convnumsig(trimmed.tree,phendata,convtips,10,plot=FALSE,ellipse=NULL,plotellipse=NULL)
+answer2<-convratsig(trimmed.tree,phendata,convtips,10)
+answer=convnum(trimmed.tree,phendata,convtips)
+
+pdf(file = "./Output/convergence.pdf", width=7.2, height=5)
+convnum(trimmed.tree,phendata,convtips)
+dev.off()
+```
+
+```{r Ecological Linear Models}
+#whole morphospace
+lm.null=lm(phylocoords~1)
+lm.full=lm(phylocoords~phyloclass$Habitat.Albert+phyloclass$Vegetation.Albert+phyloclass$Diet.Adult+phyloclass$Diet.Albert+phyloclass$Sand)
+
+fit.null=procD.pgls(lm.null, phy = trimmed.tree, iter = 999, SS.type = "III")
+fit.full=procD.pgls(lm.full,phy = trimmed.tree, iter = 999, SS.type = "III")
+
+fit.null$aov.table
+anovatable=fit.full$aov.table
+
+write.csv(anovatable, file = "./Output/PGLS.txt")
+
+#Separate subfamilies
+Clade1.1<-phylocoords[1:36,]
+Clade2.1<-phylocoords[37:41,]
+Clade3.1<-phylocoords[42:49,]
+
+species=as.factor(row.names(Clade1.1))
+Hypostominae.trimmed.tree=drop.tip(tree,tree$tip.label[-na.omit(match(species, tree$tip.label))])
+
+species=as.factor(row.names(Clade2.1))
+Hypoptopomatinae.trimmed.tree=drop.tip(tree,tree$tip.label[-na.omit(match(species, tree$tip.label))])
+
+species=as.factor(row.names(Clade3.1))
+Loricariinae.trimmed.tree=drop.tip(tree,tree$tip.label[-na.omit(match(species, tree$tip.label))])
+
+  # Hypostominae
+  lm.full.1=lm(Clade1.1~phyloclass[1:36,]$Habitat.Albert+phyloclass[1:36,]$Vegetation.Albert+phyloclass[1:36,]$Diet.Adult+phyloclass[1:36,]$Diet.Albert) #Sand = No for all
+  fit.full.1=procD.pgls(lm.full.1,phy = Hypostominae.trimmed.tree, iter = 999, SS.type = "III")
+  fit.full.1$aov.table
+  
+  # Hypoptopomatinae
+  lm.full.2=lm(Clade2.1~phyloclass[37:41,]$Habitat.Albert+phyloclass[37:41,]$Diet.Adult) #Vegetation = RiverVeg (all but Corumbataia tocantinensis); Diet.Albert = all algivore; Sand = No for all 
+  fit.full.2=procD.pgls(lm.full.2,phy = Hypoptopomatinae.trimmed.tree, iter = 999, SS.type = "III")
+  fit.full.2$aov.table
+  
+  # Loricariinae
+  lm.full.3=lm(Clade3.1~phyloclass[42:49,]$Diet.Adult+phyloclass[42:49,]$Habitat.Albert+phyloclass[42:49,]$Vegetation.Albert) #Diet.Albert = all algivore, 
+  fit.full.3=procD.pgls(lm.full.3,phy = Loricariinae.trimmed.tree, iter = 999, SS.type = "III")
+  fit.full.3$aov.table
+  
+  
+  fit.full$aov.table # All
+    fit.full.1$aov.table # Hypostominae
+      fit.full.2$aov.table # Hypoptopomatinae
+        fit.full.3$aov.table # Loricariinae
+
+physignal(Clade1.1, Hypostominae.trimmed.tree)
+physignal(Clade2.1, Hypoptopomatinae.trimmed.tree)
+physignal(Clade3.1, Loricariinae.trimmed.tree)
+```

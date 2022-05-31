@@ -1,0 +1,5 @@
+,Mouth,	Head&Opercula,	MidBody,	Tail
+Mouth,	1,	0.68,	0.63,	0.72
+Head&Opercula,	0.68,	1,	0.83,	0.75
+MidBody,	0.63,	0.83,	1,	1.07
+Tail,	0.72,	0.75,	1.07,	1

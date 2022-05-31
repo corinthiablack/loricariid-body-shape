@@ -1,0 +1,8 @@
+﻿,Mouth,Face,Opercle,PectoralDorsalFins,PelvicFins,Cloaca,MedialFins
+Mouth,0.00,0.77,0.68,0.68,0.65,0.61,0.76
+Face,0.77,0.00,0.81,0.86,0.65,0.61,0.76
+Opercle,0.68,0.81,0.00,0.81,0.67,0.68,0.81
+PectoralDorsalFins,0.68,0.86,0.81,0.00,0.71,0.66,0.88
+PelvicFins,0.65,0.65,0.67,0.71,0.00,0.65,0.82
+Cloaca,0.61,0.61,0.68,0.66,0.65,0.00,0.86
+MedialFins,0.76,0.76,0.81,0.88,0.82,0.86,0.00
